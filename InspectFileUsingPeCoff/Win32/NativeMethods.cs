@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
 using System.Security;
 using Microsoft.Win32.SafeHandles;
 
@@ -8,6 +9,11 @@ namespace InspectFileUsingPeCoff.Win32
     [SecurityCritical]
     internal static class NativeMethods
     {
+        [DllImport(DllImports.OleAut32, CharSet = CharSet.Unicode)]
+        public static extern int LoadTypeLib(
+            [In] string file,
+            [Out] out ITypeLib? typeLib);
+
         [DllImport(DllImports.Kernel32, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         public static extern bool CloseHandle(

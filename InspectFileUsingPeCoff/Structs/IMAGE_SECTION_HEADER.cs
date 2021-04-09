@@ -36,9 +36,10 @@ namespace InspectFileUsingPeCoff.Structs
             }
         }
 
-        public uint ToRva(uint offset)
+        public uint ToFileOffset(uint relativeVirtualAddress)
         {
-            return offset + PointerToRawData - VirtualAddress;
+            // https://stackoverflow.com/questions/45212489/image-section-headers-virtualaddress-and-pointertorawdata-difference
+            return relativeVirtualAddress + PointerToRawData - VirtualAddress;
         }
     }
 }
