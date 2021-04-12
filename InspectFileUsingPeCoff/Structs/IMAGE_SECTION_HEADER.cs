@@ -32,7 +32,9 @@ namespace InspectFileUsingPeCoff.Structs
         {
             fixed (byte* pName = Name)
             {
-                return Marshal.PtrToStringAnsi(new IntPtr(pName));
+                return pName == null ?
+                    string.Empty :
+                    Marshal.PtrToStringAnsi(new IntPtr(pName)) ?? string.Empty;
             }
         }
 

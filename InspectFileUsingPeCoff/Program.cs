@@ -1,5 +1,6 @@
 ﻿using System;
 using System.IO;
+using System.IO.MemoryMappedFiles;
 using System.Linq;
 using System.Runtime.InteropServices;
 using InspectFileUsingPeCoff.Structs;
@@ -9,7 +10,7 @@ namespace InspectFileUsingPeCoff
 {
     internal static class Program
     {
-        private static void Main(string[] args)
+        private static void Main()
         {
             Console.WriteLine("Hello World!");
 
@@ -22,12 +23,18 @@ namespace InspectFileUsingPeCoff
             const string path1 = @"C:\Windows\System32\MSCOMCT2.OCX";
             var hr1 = NativeMethods.LoadTypeLib(path1, out var typeLib1);
             var exception1 = Marshal.GetExceptionForHR(hr1);
-            Marshal.FinalReleaseComObject(typeLib1);
+            if (exception1 != null)
+                Console.WriteLine(exception1.ToString());
+            if (typeLib1 != null)
+                Marshal.FinalReleaseComObject(typeLib1);
 
             const string path2 = @"C:\Windows\SysWOW64\MSCOMCT2.OCX";
             var hr2 = NativeMethods.LoadTypeLib(path2, out var typeLib2);
             var exception2 = Marshal.GetExceptionForHR(hr2);
-            Marshal.FinalReleaseComObject(typeLib2);
+            if (exception2 != null)
+                Console.WriteLine(exception2.ToString());
+            if (typeLib2 != null)
+                Marshal.FinalReleaseComObject(typeLib2);
         }
 
         private static void InspectFiles()
@@ -45,60 +52,39 @@ namespace InspectFileUsingPeCoff
 
             var response = new FileInspectionResponse();
 
-            using var fileStream = File.OpenRead(filePath);
+            using var fileMapping = MemoryMappedFile.CreateFromFile(filePath, FileMode.Open, null, 0L, MemoryMappedFileAccess.Read);
 
-            using var fileMapping = NativeMethods.CreateFileMapping(
-                fileStream.SafeFileHandle,
-                IntPtr.Zero,
-                FileMapProtection.PageReadonly,
-                0,
-                0,
-                null);
+            using var viewOfFile = fileMapping.CreateViewAccessor(0L, 0L, MemoryMappedFileAccess.Read);
 
-            if (fileMapping.IsInvalid)
-                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
-
-            var viewOfFile = NativeMethods.MapViewOfFile(
-                fileMapping,
-                FileMapAccess.FileMapRead,
-                0,
-                0,
-                IntPtr.Zero);
-
-            if (viewOfFile.IsInvalid)
-                Marshal.ThrowExceptionForHR(Marshal.GetHRForLastWin32Error());
-
-            viewOfFile.Initialize((ulong)fileStream.Length);
-
-            var dosHeader = viewOfFile.Read<IMAGE_DOS_HEADER>(0);
+            viewOfFile.Read(0, out IMAGE_DOS_HEADER dosHeader);
             if (dosHeader.e_magic != PeConstants.IMAGE_DOS_SIGNATURE)
                 return response;
 
-            var peHeader = viewOfFile.Read<IMAGE_NT_HEADER>(dosHeader.e_lfanew);
+            viewOfFile.Read(dosHeader.e_lfanew, out IMAGE_NT_HEADER peHeader);
             if (peHeader.Signature != PeConstants.IMAGE_NT_SIGNATURE)
                 return response;
 
-            var optionalHeaderOffset = (ulong)(dosHeader.e_lfanew + Marshal.SizeOf<IMAGE_NT_HEADER>());
+            var optionalHeaderOffset = dosHeader.e_lfanew + Marshal.SizeOf<IMAGE_NT_HEADER>();
 
-            var magic = viewOfFile.Read<ushort>(optionalHeaderOffset);
+            var magic = viewOfFile.ReadUInt16(optionalHeaderOffset);
             if (!Enum.IsDefined(typeof(BitnessType), (int)magic))
                 return response;
 
             response.Bitness = (BitnessType)magic;
 
-            ulong optionalHeaderSize;
+            int optionalHeaderSize;
             uint numberOfRvaAndSizes;
 
             if (response.Bitness == BitnessType.Bitness32)
             {
-                optionalHeaderSize = (ulong)Marshal.SizeOf<IMAGE_OPTIONAL_HEADER32>();
-                var optionalHeader = viewOfFile.Read<IMAGE_OPTIONAL_HEADER32>(optionalHeaderOffset);
+                optionalHeaderSize = Marshal.SizeOf<IMAGE_OPTIONAL_HEADER32>();
+                viewOfFile.Read(optionalHeaderOffset, out IMAGE_OPTIONAL_HEADER32 optionalHeader);
                 numberOfRvaAndSizes = optionalHeader.NumberOfRvaAndSizes;
             }
             else
             {
-                optionalHeaderSize = (ulong)Marshal.SizeOf<IMAGE_OPTIONAL_HEADER64>();
-                var optionalHeader = viewOfFile.Read<IMAGE_OPTIONAL_HEADER64>(optionalHeaderOffset);
+                optionalHeaderSize = Marshal.SizeOf<IMAGE_OPTIONAL_HEADER64>();
+                viewOfFile.Read(optionalHeaderOffset, out IMAGE_OPTIONAL_HEADER64 optionalHeader);
                 numberOfRvaAndSizes = optionalHeader.NumberOfRvaAndSizes;
             }
 
@@ -119,7 +105,7 @@ namespace InspectFileUsingPeCoff
                 exportDataDirectory.VirtualAddress < section.VirtualAddress + section.VirtualSize);
 
             var exportDirectoryOffset = exportSectionHeader.ToFileOffset(exportDataDirectory.VirtualAddress);
-            var exportDirectory = viewOfFile.Read<IMAGE_EXPORT_DIRECTORY>(exportDirectoryOffset);
+            viewOfFile.Read(exportDirectoryOffset, out IMAGE_EXPORT_DIRECTORY exportDirectory);
 
             if (exportDirectory.NumberOfNames == 0)
                 return response;
@@ -131,9 +117,9 @@ namespace InspectFileUsingPeCoff
             for (uint i = 0; i < exportDirectory.NumberOfNames; ++i)
             {
                 const uint sizeOfInt32 = 4;
-                var exportNameVirtualAddress = viewOfFile.Read<uint>(nameTableOffset + i * sizeOfInt32);
+                var exportNameVirtualAddress = viewOfFile.ReadUInt32(nameTableOffset + i * sizeOfInt32);
                 var exportNameOffset = exportSectionHeader.ToFileOffset(exportNameVirtualAddress);
-                var exportNamePtr = viewOfFile.DangerousGetHandle() + (int)exportNameOffset;
+                var exportNamePtr = viewOfFile.SafeMemoryMappedViewHandle.DangerousGetHandle() + (int)exportNameOffset;
                 var exportName = Marshal.PtrToStringAnsi(exportNamePtr);
 
                 Console.WriteLine(exportName);

@@ -2,7 +2,6 @@
 {
     internal static class DllImports
     {
-        public const string Kernel32 = "kernel32.dll";
         public const string OleAut32 = "oleaut32.dll";
     }
 }
