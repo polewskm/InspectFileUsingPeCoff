@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Collections.Generic;
 using System.IO;
 using System.IO.MemoryMappedFiles;
 using System.Linq;
@@ -39,7 +40,8 @@ namespace InspectFileUsingPeCoff
 
         private static void InspectFiles()
         {
-            const string path1 = @"C:\Windows\System32\MSCOMCT2.OCX";
+            //const string path1 = @"C:\Windows\System32\MSCOMCT2.OCX";
+            const string path1 = @"C:\Windows\Microsoft.NET\Framework64\v4.0.30319\mscorlib.dll";
             InspectFile(path1);
 
             const string path2 = @"C:\Windows\SysWOW64\MSCOMCT2.OCX";
@@ -92,13 +94,34 @@ namespace InspectFileUsingPeCoff
             var dataDirectories = new IMAGE_DATA_DIRECTORY[numberOfRvaAndSizes];
             viewOfFile.ReadArray(firstDataDirectoryOffset, dataDirectories, 0, dataDirectories.Length);
 
-            var exportDataDirectory = dataDirectories[PeConstants.IMAGE_DIRECTORY_ENTRY_EXPORT];
-            if (exportDataDirectory.VirtualAddress == 0 || exportDataDirectory.Size == 0)
-                return response;
-
             var firstSectionHeaderOffset = optionalHeaderOffset + peHeader.FileHeader.SizeOfOptionalHeader;
             var sectionHeaders = new IMAGE_SECTION_HEADER[peHeader.FileHeader.NumberOfSections];
             viewOfFile.ReadArray(firstSectionHeaderOffset, sectionHeaders, 0, sectionHeaders.Length);
+
+            CheckComExports(
+                response,
+                viewOfFile,
+                dataDirectories,
+                sectionHeaders);
+
+            CheckIfManaged(
+                response,
+                viewOfFile,
+                dataDirectories,
+                sectionHeaders);
+
+            return response;
+        }
+
+        private static void CheckComExports(
+            FileInspectionResponse response,
+            MemoryMappedViewAccessor viewOfFile,
+            IReadOnlyList<IMAGE_DATA_DIRECTORY> dataDirectories,
+            IEnumerable<IMAGE_SECTION_HEADER> sectionHeaders)
+        {
+            var exportDataDirectory = dataDirectories[PeConstants.IMAGE_DIRECTORY_ENTRY_EXPORT];
+            if (exportDataDirectory.VirtualAddress == 0 || exportDataDirectory.Size == 0)
+                return;
 
             var exportSectionHeader = sectionHeaders.First(section =>
                 exportDataDirectory.VirtualAddress >= section.VirtualAddress &&
@@ -108,7 +131,7 @@ namespace InspectFileUsingPeCoff
             viewOfFile.Read(exportDirectoryOffset, out IMAGE_EXPORT_DIRECTORY exportDirectory);
 
             if (exportDirectory.NumberOfNames == 0)
-                return response;
+                return;
 
             var hasDllRegisterServer = false;
             var hasDllUnregisterServer = false;
@@ -136,13 +159,35 @@ namespace InspectFileUsingPeCoff
                         DllExports.DllUnregisterServer,
                         StringComparison.OrdinalIgnoreCase);
 
-                if (!hasDllRegisterServer || !hasDllUnregisterServer) continue;
-
-                response.HasComServerExports = true;
-                return response;
+                if (hasDllRegisterServer && hasDllUnregisterServer) break;
             }
 
-            return response;
+            response.HasComServerExports = hasDllRegisterServer && hasDllUnregisterServer;
+        }
+
+        private static void CheckIfManaged(
+            FileInspectionResponse response,
+            UnmanagedMemoryAccessor viewOfFile,
+            IReadOnlyList<IMAGE_DATA_DIRECTORY> dataDirectories,
+            IEnumerable<IMAGE_SECTION_HEADER> sectionHeaders)
+        {
+            var managedDataDirectory = dataDirectories[PeConstants.IMAGE_DIRECTORY_ENTRY_COM_DESCRIPTOR];
+            if (managedDataDirectory.VirtualAddress == 0 || managedDataDirectory.Size == 0)
+                return;
+
+            var managedSectionHeader = sectionHeaders.First(section =>
+                managedDataDirectory.VirtualAddress >= section.VirtualAddress &&
+                managedDataDirectory.VirtualAddress < section.VirtualAddress + section.VirtualSize);
+
+            var managedDirectoryOffset = managedSectionHeader.ToFileOffset(managedDataDirectory.VirtualAddress);
+            viewOfFile.Read(managedDirectoryOffset, out IMAGE_COR20_HEADER managedHeader);
+
+            var sizeOfManagedHeader = Marshal.SizeOf<IMAGE_COR20_HEADER>();
+            if (managedHeader.cb != sizeOfManagedHeader)
+                return;
+
+            response.IsManaged = true;
+            response.IsStrongNameSigned = managedHeader.Flags.HasFlag(ComImageFlags.StrongNameSigned);
         }
     }
 }
